@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Privacy guard. This policy tells the browser to refuse every network request
+  from this page: no fetches, images, fonts, frames, or form posts. Keep it.
+  test/file.test.js fails if it is removed or loosened.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Readability Checker</title>
+
+<!-- ======================================================================
+     TEAM SETTINGS: the part of this file you are meant to edit.
+     Everyone who opens your copy of the file gets these settings.
+     ====================================================================== -->
+<script id="team-config">
+window.READABILITY_CONFIG = {
+  // The grade level writers aim for. Set this to your team's standard.
+  targetGrade: 8,
+
+  // The formula behind the headline score: fleschKincaid, ari, gunningFog,
+  // smog, or colemanLiau.
+  headlineFormula: "fleschKincaid",
+
+  // Sentences with more words than this are marked as long.
+  longSentenceWords: 25,
+
+  // Agency names and acronyms. These are never marked as hard words, and they
+  // are left out of the "without agency names and phone numbers" score.
+  // Terms in ALL CAPS match exact case, so OATH does not match "oath".
+  ignoreTerms: [
+    "311", "NYC", "New York City",
+    "ACS", "DCWP", "DEP", "DFTA", "DOB", "DOE", "DOF", "DOHMH", "DOT", "DPR",
+    "DSNY", "EMS", "FDNY", "HPD", "HRA", "MTA", "NYCHA", "NYPD", "OATH", "TLC",
+    "Administration for Children's Services",
+    "Department of Buildings",
+    "Department of Consumer and Worker Protection",
+    "Department of Education",
+    "Department of Environmental Protection",
+    "Department of Finance",
+    "Department of Health and Mental Hygiene",
+    "Department of Housing Preservation and Development",
+    "Department of Parks and Recreation",
+    "Department of Sanitation",
+    "Department of Transportation",
+    "Human Resources Administration",
+    "Metropolitan Transportation Authority",
+    "Taxi and Limousine Commission"
+  ],
+
+  // Common long words that most readers know. Not marked as hard words, but
+  // still counted in every score.
+  familiarLongWords: [
+    "information", "available", "community", "emergency", "application",
+    "applications", "identification", "transportation", "immediately",
+    "organization", "organizations", "appointment", "appointments",
+    "electricity", "January", "February"
+  ],
+
+  // Bureaucratic wording and plainer choices. Separate word forms with |.
+  replacements: {
+    "utilize|utilizes|utilized|utilizing": "use",
+    "utilization": "use",
+    "in accordance with": "under, or following",
+    "prior to": "before",
+    "subsequent to": "after",
+    "in order to": "to",
+    "for the purpose of": "to, or for",
+    "in the event that": "if",
+    "in the event of": "if there is",
+    "at this point in time": "now",
+    "at the present time": "now",
+    "due to the fact that": "because",
+    "on the basis of": "based on",
+    "with regard to|with respect to|in regard to": "about",
+    "in reference to|pertaining to": "about",
+    "in addition to": "besides, or also",
+    "a number of": "some, or the exact number",
+    "a majority of": "most",
+    "is able to|are able to": "can",
+    "is required to|are required to": "must",
+    "shall": "must, or will",
+    "commence|commences|commenced": "start",
+    "terminate|terminates|terminated": "end",
+    "termination": "end",
+    "purchase|purchases|purchased": "buy",
+    "obtain|obtains|obtained|obtaining": "get",
+    "provide|provides|provided|providing": "give",
+    "requested|requesting": "asked for, or asking for",
+    "submit|submits|submitted|submitting": "send, or file",
+    "reside|resides|resided|residing": "live",
+    "residence": "home",
+    "assist|assists|assisted|assisting": "help",
+    "assistance": "help",
+    "additional": "more",
+    "sufficient": "enough",
+    "approximately": "about",
+    "numerous": "many",
+    "individuals": "people",
+    "regarding|concerning": "about",
+    "pursuant to": "under",
+    "notwithstanding": "even if, or despite",
+    "aforementioned": "this, or name the thing",
+    "herein|therein|thereof": "here, there, or of it",
+    "remuneration": "pay",
+    "expenditure|expenditures": "cost, or spending",
+    "ascertain|ascertains|ascertained": "find out",
+    "facilitate|facilitates|facilitated|facilitating": "help, or make easier",
+    "demonstrate|demonstrates|demonstrated": "show",
+    "indicate|indicates|indicated": "show, or say",
+    "modify|modifies|modified": "change",
+    "implement|implements|implemented": "carry out, or start",
+    "ensure|ensures|ensured": "make sure",
+    "eligible": "can get, or qualify",
+    "must be accompanied by": "must include"
+  }
+};
+</script>
+
+<!-- ======================================================================
+     ENGINE: text analysis with no access to the page. test/ runs this block
+     directly, so keep it free of DOM calls.
+     ====================================================================== -->
+<script id="engine">
+(function (root) {
+  "use strict";
+
+  // ---- Lines ------------------------------------------------------------
+  // Each line of input is its own unit. A bullet or heading with no period
+  // therefore cannot run into the next one and inflate the score.
+  var LINE_MARKER = /^\s*(#{1,6}\s+|(?:[-*+•‣◦·▪–—]|\d{1,3}[.)]|[a-z][.)])\s+)/;
+
+  function parseLines(text) {
+    var lines = [], offset = 0;
+    text.split("\n").forEach(function (raw) {
+      var marker = raw.match(LINE_MARKER);
+      var contentStart = marker ? marker[0].length : 0;
+      var type = "text";
+      if (marker) type = marker[1].charAt(0) === "#" ? "heading" : "list";
+      if (!raw.trim()) type = "blank";
+      lines.push({
+        type: type,
+        start: offset,
+        end: offset + raw.length,
+        contentStart: offset + contentStart
+      });
+      offset += raw.length + 1;
+    });
+    return lines;
+  }
+
+  // ---- Sentences --------------------------------------------------------
+  var HARD_ABBREVIATIONS = new Set(("dr mr mrs ms mx prof sr jr st ave blvd rd apt ste dept " +
+    "inc ltd corp vs approx ext jan feb apr jun jul aug sept oct nov").split(" "));
+  var SOFT_ABBREVIATIONS = new Set(["a.m", "p.m", "etc"]);
+  var DAY_OR_MONTH = /^(?:mon|tues?|wed(?:nes)?|thu(?:rs?)?|fri|sat(?:ur)?|sun)(?:day)?\b|^(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
+
+  function isSentenceBoundary(before, terminator, nextWord) {
+    var next = nextWord.replace(/^[("'“‘\[]+/, "");
+    if (/^\p{Ll}/u.test(next)) return false;
+    if (terminator.charAt(0) !== "." || terminator.indexOf("..") === 0) return true;
+
+    var lastMatch = before.match(/(\S+)$/);
+    if (!lastMatch) return true;
+    var last = lastMatch[1].replace(/^[("'“‘\[]+/, "");
+    var key = last.toLowerCase();
+
+    if (HARD_ABBREVIATIONS.has(key)) return false;
+    if ((key === "no" || key === "nos") && /^\d/.test(next)) return false;
+    if (/^\p{Lu}$/u.test(last)) return false;
+    if (SOFT_ABBREVIATIONS.has(key)) return !DAY_OR_MONTH.test(next);
+    if (/^(?:\p{L}\.)+\p{L}$/u.test(last)) return false; // U.S., e.g., i.e.
+    return true;
+  }
+
+  // Returns [{start, end}] offsets into `line`.
+  function splitSentences(line) {
+    var out = [], start = 0, match;
+    var terminators = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+    while ((match = terminators.exec(line))) {
+      var end = match.index + match[0].length;
+      var following = line.slice(end).match(/^(\s+)(\S+)/);
+      if (!following) break;
+      if (!isSentenceBoundary(line.slice(start, match.index), match[0], following[2])) continue;
+      out.push({ start: start, end: end });
+      start = end + following[1].length;
+    }
+    var tail = line.slice(start).replace(/\s+$/, "");
+    if (tail) out.push({ start: start, end: start + tail.length });
+    return out;
+  }
+
+  // ---- Words ------------------------------------------------------------
+  var TOKEN = /https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)]|[\w.+-]+@[\w-]+(?:\.[\w-]+)+|\d+(?:,\d{3})+(?:\.\d+)?|[\p{L}\p{N}]+(?:['’.\-\/:_][\p{L}\p{N}]+)*/gu;
+  var WEB_ADDRESS = /^(?:https?:|www\.)|@|\.(?:gov|com|org|net|edu)(?:\/|$)/i;
+
+  function tokenize(text, base) {
+    var tokens = [], match;
+    TOKEN.lastIndex = 0;
+    while ((match = TOKEN.exec(text))) {
+      tokens.push({
+        text: match[0],
+        start: base + match.index,
+        end: base + match.index + match[0].length,
+        isWebAddress: WEB_ADDRESS.test(match[0])
+      });
+    }
+    return tokens;
+  }
+
+  function letterCount(word) {
+    return (word.match(/[\p{L}\p{N}]/gu) || []).length;
+  }
+
+  // ---- Syllables --------------------------------------------------------
+  // Rules plus exceptions. No counter is perfect for English, and every tool's
+  // scores differ a little for this reason. Add a wrong word to SYLLABLE_EXCEPTIONS
+  // and pin it in test/engine.test.js.
+  var SYLLABLE_EXCEPTIONS = {
+    area: 3, areas: 3, idea: 3, ideas: 3, create: 2, creates: 2, created: 3, creating: 3,
+    video: 3, videos: 3, science: 2, client: 2, clients: 2, quiet: 2, diet: 2, variety: 4,
+    someone: 2, somewhere: 2, something: 2, sometimes: 2, somehow: 2, anywhere: 3,
+    everyone: 3, everything: 3, everywhere: 3, therefore: 2, business: 2, businesses: 3,
+    element: 3, elements: 3, implement: 3, implements: 3, implemented: 4, supplement: 3,
+    complement: 3, experiment: 4, tenement: 3, maybe: 2, recipe: 3, recipes: 3,
+    beyond: 2, mayor: 2, mayors: 2, every: 2, different: 2, evening: 2, family: 3,
+    families: 3, interest: 2, interested: 3, vehicle: 3, vehicles: 3, people: 2,
+    being: 2, poem: 2, real: 1, really: 2, ruin: 2, fuel: 2, cruel: 2, liable: 3,
+    reliable: 4, available: 4, reapply: 3, reopen: 3, reuse: 2, preexisting: 4,
+    cooperate: 4, coordinate: 4, year: 1, years: 1, one: 1, once: 1,
+    theatre: 3, theater: 3, medicaid: 3, medicare: 3, sanitation: 4, sewer: 2,
+    tower: 2, power: 2, flower: 2, shower: 2, hour: 1, hours: 1, fire: 1, tire: 1,
+    use: 1, used: 1, uses: 2, more: 1, make: 1, ave: 1, wednesday: 2, february: 4,
+    january: 4, library: 3, poison: 2, service: 2, services: 3, license: 2, licenses: 3,
+    average: 2, general: 3, several: 2, separate: 3, apartment: 3, apartments: 3,
+    violation: 4, violations: 4, society: 4, senior: 2, seniors: 2, million: 2, billion: 2,
+    union: 2, unions: 2, opinion: 3, opinions: 3, period: 3, periods: 3
+  };
+
+  function countAlphaSyllables(word) {
+    var w = word.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(SYLLABLE_EXCEPTIONS, w)) return SYLLABLE_EXCEPTIONS[w];
+    if (w.length <= 3) return Math.max(1, (w.match(/[aeiouy]+/g) || []).length);
+
+    var count = (w.match(/[aeiouy]+/g) || []).length;
+
+    // Silent endings.
+    if (/[^aeiouy]e$/.test(w) && !/[^aeiouy]le$/.test(w)) count--;
+    if (/[^aeiouytd]ed$/.test(w)) count--;
+    if (/[^aeiouy]es$/.test(w) && !/(?:[sxzcg]|ch|sh|[^aeiouy]l)es$/.test(w)) count--;
+    if (/[^aeiouy]e(?:ment|ments|ly|less|ful|fully|ness)$/.test(w)) count--;
+
+    // Adjacent vowels that are said separately.
+    if (/[aeiouy]ing$/.test(w)) count++;
+    if (/[^cstg]ia/.test(w)) count++;
+    if (/[^cstgxln]io/.test(w)) count++;
+    if (/iu/.test(w)) count++;
+    if (/[^qg]ua/.test(w)) count++;
+    if (/ism$/.test(w)) count++;
+    if (/[^aeiouy]ier$/.test(w)) count++;
+
+    return Math.max(1, count);
+  }
+
+  function countSyllables(token) {
+    var cleaned = token.replace(/[’']s$/i, "");
+    var extra = /[dsz]n['’]t$/i.test(cleaned) ? 1 : 0; // couldn't, isn't, wasn't
+    cleaned = cleaned.replace(/['’]/g, "");
+    var total = extra;
+    (cleaned.match(/\d+|\p{L}+/gu) || []).forEach(function (part) {
+      if (/^\d+$/.test(part)) {
+        total += part.length; // 311 is read "three one one"
+      } else if (part === part.toUpperCase() && part.length > 1 &&
+          (!/[aeiouy]/i.test(part) || (part.length >= 4 && !/[aeiou]/i.test(part)))) {
+        for (var i = 0; i < part.length; i++) total += part.charAt(i) === "W" ? 3 : 1; // HPD, DSNY
+      } else {
+        total += countAlphaSyllables(part);
+      }
+    });
+    return Math.max(1, total);
+  }
+
+  // ---- Formulas ---------------------------------------------------------
+  // Published formulas. Input is a set of plain counts.
+  function computeScores(c) {
+    if (!c.words || !c.sentences) return null;
+    var wordsPerSentence = c.words / c.sentences;
+    var syllablesPerWord = c.syllables / c.words;
+    return {
+      fleschReadingEase: 206.835 - 1.015 * wordsPerSentence - 84.6 * syllablesPerWord,
+      fleschKincaid: 0.39 * wordsPerSentence + 11.8 * syllablesPerWord - 15.59,
+      ari: 4.71 * (c.letters / c.words) + 0.5 * wordsPerSentence - 21.43,
+      gunningFog: 0.4 * (wordsPerSentence + 100 * (c.complex / c.words)),
+      smog: 1.043 * Math.sqrt(c.polysyllables * (30 / c.sentences)) + 3.1291,
+      colemanLiau: 0.0588 * (c.letters / c.words) * 100 - 0.296 * (c.sentences / c.words) * 100 - 15.8
+    };
+  }
+
+  // Gunning Fog leaves out proper nouns, hyphenated words, and words that only
+  // reach three syllables through a suffix.
+  function isFogComplex(token, syllables, isFirstInSentence) {
+    if (syllables < 3 || !/^\p{L}+$/u.test(token)) return false;
+    if (!isFirstInSentence && /^\p{Lu}/u.test(token)) return false;
+    var base = syllables;
+    if (/ing$/i.test(token)) base--;
+    else if (/(?:[td]ed|[sxz]es|[cs]hes|[cg]es)$/i.test(token)) base--;
+    return base >= 3;
+  }
+
+  // ---- Term matching ----------------------------------------------------
+  function termRegex(alternatives, flags) {
+    var body = alternatives.map(function (term) {
+      return term.trim().replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&").replace(/\s+/g, "\\s+");
+    }).join("|");
+    return new RegExp("(?<![\\p{L}\\p{N}])(?:" + body + ")(?![\\p{L}\\p{N}])", flags);
+  }
+
+  function findSpans(text, regex, extra) {
+    var spans = [], match;
+    regex.lastIndex = 0;
+    while ((match = regex.exec(text))) {
+      if (!match[0]) { regex.lastIndex++; continue; }
+      var span = { start: match.index, end: match.index + match[0].length };
+      if (extra) Object.assign(span, extra);
+      spans.push(span);
+    }
+    return spans;
+  }
+
+  var PHONE = /(?<![\d-])(?:\+?1[-.\s]?)?(?:\(\d{3}\)\s*|\d{3}[-.\s])\d{3}[-.\s]\d{4}(?!\d)/g;
+
+  function findExemptSpans(text, ignoreTerms) {
+    var spans = findSpans(text, PHONE);
+    var terms = (ignoreTerms || []).filter(function (t) { return t && t.trim(); });
+    // ALL CAPS terms match exact case so that DOT does not match "dot".
+    var exact = terms.filter(function (t) { return t === t.toUpperCase(); });
+    var loose = terms.filter(function (t) { return t !== t.toUpperCase(); });
+    if (exact.length) spans = spans.concat(findSpans(text, termRegex(exact, "gu")));
+    if (loose.length) spans = spans.concat(findSpans(text, termRegex(loose, "giu")));
+    return spans;
+  }
+
+  function buildReplacementMatchers(replacements) {
+    return Object.keys(replacements || {}).map(function (key) {
+      return {
+        label: key.split("|")[0].trim(),
+        suggestion: replacements[key],
+        regex: termRegex(key.split("|"), "giu")
+      };
+    });
+  }
+
+  // ---- Style checks -----------------------------------------------------
+  var NOT_ADVERBS = new Set(("only family apply reply supply early daily weekly monthly yearly " +
+    "july italy assembly likely unlikely friendly elderly lonely holy ugly rely fly belly bully " +
+    "anomaly butterfly comply imply multiply ally rally tally jelly silly curly hourly quarterly " +
+    "homily orderly costly").split(" "));
+
+  var IRREGULAR_PARTICIPLES = ("arisen been beaten become begun bent bitten blown broken brought built " +
+    "bought caught chosen come cut dealt done drawn driven eaten fallen felt fought found forgiven " +
+    "forgotten frozen given gone grown hung heard held hidden hit hurt kept known laid led left lent " +
+    "lost made meant met paid put read rewritten run said seen sold sent set shaken shown shut " +
+    "spent spoken stolen struck sworn taken taught thrown told understood woken won worn written").split(" ");
+  var NOT_PASSIVE = new Set(("indeed need speed feed seed red bed shed hundred breed weed exceed proceed " +
+    "succeed tired interested excited pleased married supposed concerned open closed located " +
+    "left gone done come run set read put hit").split(" "));
+  var PASSIVE = new RegExp("(?<![\\p{L}\\p{N}])(?:am|is|are|was|were|be|been|being)\\s+(?:not\\s+)?(?:\\p{L}+ly\\s+)?(\\p{L}+ed|" +
+    IRREGULAR_PARTICIPLES.join("|") + ")(?![\\p{L}\\p{N}])", "giu");
+
+  // ---- Main -------------------------------------------------------------
+  var DEFAULTS = {
+    targetGrade: 8,
+    headlineFormula: "fleschKincaid",
+    longSentenceWords: 25,
+    ignoreTerms: [],
+    familiarLongWords: [],
+    replacements: {}
+  };
+  var HARD_WORD_SYLLABLES = 4;
+  var HARD_SENTENCE_MIN_WORDS = 10;
+  var HARD_SENTENCE_GRADE_MARGIN = 4; // this many grades above the target
+  var WORDS_PER_MINUTE = 200;
+
+  function overlaps(a, b) { return a.start < b.end && b.start < a.end; }
+
+  function emptyCounts() {
+    return { words: 0, sentences: 0, syllables: 0, letters: 0, complex: 0, polysyllables: 0 };
+  }
+
+  function analyze(text, options) {
+    var opts = Object.assign({}, DEFAULTS, options || {});
+    var source = String(text || "").replace(/\r\n?/g, "\n");
+    var familiar = new Set((opts.familiarLongWords || []).map(function (w) { return w.toLowerCase(); }));
+    var exemptSpans = findExemptSpans(source, opts.ignoreTerms);
+    var matchers = buildReplacementMatchers(opts.replacements);
+
+    var raw = emptyCounts(), adjusted = emptyCounts();
+    var lines = parseLines(source);
+    var sentences = [];
+    var units = 0;
+
+    lines.forEach(function (line) {
+      line.sentences = [];
+      if (line.type === "blank") return;
+      var content = source.slice(line.contentStart, line.end);
+      var parts = splitSentences(content);
+      var lineHasWords = false;
+
+      parts.forEach(function (part) {
+        var start = line.contentStart + part.start;
+        var end = line.contentStart + part.end;
+        var tokens = tokenize(source.slice(start, end), start);
+        if (!tokens.length) return;
+        lineHasWords = true;
+
+        var sentence = {
+          index: sentences.length,
+          start: start,
+          end: end,
+          text: source.slice(start, end),
+          wordCount: tokens.length,
+          grade: null,
+          flags: []
+        };
+        var own = emptyCounts();
+
+        tokens.forEach(function (token, i) {
+          var syllables = countSyllables(token.text);
+          var letters = letterCount(token.text);
+          var isWord = /^[\p{L}'’\-]+$/u.test(token.text);
+          var complex = isFogComplex(token.text, syllables, i === 0);
+          var poly = syllables >= 3 && !token.isWebAddress && /\p{L}/u.test(token.text) && !/\d/.test(token.text);
+          var exempt = token.isWebAddress || exemptSpans.some(function (span) { return overlaps(span, token); });
+
+          token.syllables = syllables;
+          token.exempt = exempt;
+          token.isWord = isWord;
+
+          raw.words++; raw.syllables += syllables; raw.letters += letters;
+          if (complex) raw.complex++;
+          if (poly) raw.polysyllables++;
+
+          if (!exempt) {
+            own.words++; own.syllables += syllables; own.letters += letters;
+            if (complex) own.complex++;
+            if (poly) own.polysyllables++;
+          }
+        });
+        raw.sentences++;
+
+        if (own.words) {
+          own.sentences = 1;
+          adjusted.words += own.words;
+          adjusted.syllables += own.syllables;
+          adjusted.letters += own.letters;
+          adjusted.complex += own.complex;
+          adjusted.polysyllables += own.polysyllables;
+          adjusted.sentences++;
+          sentence.grade = computeScores(own).fleschKincaid;
+        }
+
+        if (sentence.wordCount > opts.longSentenceWords) sentence.flags.push("long");
+        if (own.words >= HARD_SENTENCE_MIN_WORDS &&
+            sentence.grade >= opts.targetGrade + HARD_SENTENCE_GRADE_MARGIN) {
+          sentence.flags.push("hard");
+        }
+
+        sentence.tokens = tokens;
+        sentences.push(sentence);
+        line.sentences.push(sentence);
+      });
+
+      if (lineHasWords) units++;
+    });
+
+    // Inline marks. Overlaps resolve in this order: wording, passive, hard word, adverb.
+    var candidates = [];
+    sentences.forEach(function (sentence) {
+      matchers.forEach(function (m) {
+        findSpans(sentence.text, m.regex).forEach(function (span) {
+          candidates.push({
+            kind: "wordy",
+            start: sentence.start + span.start,
+            end: sentence.start + span.end,
+            label: m.label,
+            suggestion: m.suggestion,
+            sentenceIndex: sentence.index
+          });
+        });
+      });
+    });
+
+    sentences.forEach(function (sentence) {
+      var match;
+      PASSIVE.lastIndex = 0;
+      while ((match = PASSIVE.exec(sentence.text))) {
+        if (NOT_PASSIVE.has(match[1].toLowerCase())) continue;
+        candidates.push({
+          kind: "passive",
+          start: sentence.start + match.index,
+          end: sentence.start + match.index + match[0].length,
+          sentenceIndex: sentence.index
+        });
+      }
+    });
+
+    sentences.forEach(function (sentence) {
+      sentence.tokens.forEach(function (token) {
+        if (token.exempt || !token.isWord) return;
+        var lower = token.text.toLowerCase();
+        if (token.syllables >= HARD_WORD_SYLLABLES && !familiar.has(lower)) {
+          candidates.push({ kind: "hardWord", start: token.start, end: token.end, sentenceIndex: sentence.index });
+        } else if (/ly$/.test(lower) && lower.length > 3 && !NOT_ADVERBS.has(lower)) {
+          candidates.push({ kind: "adverb", start: token.start, end: token.end, sentenceIndex: sentence.index });
+        }
+      });
+    });
+
+    var marks = [];
+    ["wordy", "passive", "hardWord", "adverb"].forEach(function (kind) {
+      candidates.filter(function (c) { return c.kind === kind; })
+        .sort(function (a, b) { return (b.end - b.start) - (a.end - a.start); })
+        .forEach(function (candidate) {
+          if (!marks.some(function (m) { return overlaps(m, candidate); })) marks.push(candidate);
+        });
+    });
+    marks.sort(function (a, b) { return a.start - b.start; });
+    sentences.forEach(function (s) { delete s.tokens; });
+
+    var markCounts = { wordy: 0, passive: 0, hardWord: 0, adverb: 0 };
+    marks.forEach(function (m) { markCounts[m.kind]++; });
+
+    // Group wording suggestions for the "Plainer wording" list.
+    var suggestionMap = {};
+    marks.filter(function (m) { return m.kind === "wordy"; }).forEach(function (m) {
+      var entry = suggestionMap[m.label] || (suggestionMap[m.label] = { term: m.label, suggestion: m.suggestion, count: 0 });
+      entry.count++;
+    });
+
+    // Sentences to fix first: flagged ones, hardest and longest at the top.
+    var priorities = sentences.filter(function (s) { return s.flags.length; })
+      .sort(function (a, b) {
+        return (b.flags.length - a.flags.length) || ((b.grade || 0) - (a.grade || 0)) || (b.wordCount - a.wordCount);
+      });
+
+    var scores = computeScores(raw);
+    var adjustedScores = computeScores(adjusted);
+
+    return {
+      source: source,
+      lines: lines,
+      sentences: sentences,
+      marks: marks,
+      markCounts: markCounts,
+      suggestions: Object.keys(suggestionMap).map(function (k) { return suggestionMap[k]; })
+        .sort(function (a, b) { return b.count - a.count; }),
+      priorities: priorities,
+      counts: raw,
+      adjustedCounts: adjusted,
+      scores: scores,
+      adjustedScores: adjustedScores,
+      units: units,
+      readingMinutes: raw.words / WORDS_PER_MINUTE,
+      longSentences: sentences.filter(function (s) { return s.flags.indexOf("long") !== -1; }).length,
+      hardSentences: sentences.filter(function (s) { return s.flags.indexOf("hard") !== -1; }).length
+    };
+  }
+
+  root.ReadabilityEngine = {
+    analyze: analyze,
+    computeScores: computeScores,
+    countSyllables: countSyllables,
+    parseLines: parseLines,
+    splitSentences: splitSentences,
+    tokenize: tokenize
+  };
+})(globalThis);
+</script>
+
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f3ef;
+  --surface: #ffffff;
+  --ink: #1b1f24;
+  --muted: #59616b;
+  --line: #d6d4cc;
+  --accent: #174ea6;
+  --accent-ink: #ffffff;
+  --pass-bg: #e2f2e6;
+  --pass-ink: #14532d;
+  --fail-bg: #fbe6df;
+  --fail-ink: #8a2a0b;
+  --long-bg: #fdefc3;
+  --hard-bg: #fbdcd2;
+  --both-bg: #f8c9b8;
+  --wordy: #0b5cad;
+  --wordy-bg: #dcebfb;
+  --passive: #17703a;
+  --hardword: #7b2cbf;
+  --adverb: #8a5a00;
+  --focus: #174ea6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181c;
+    --surface: #1e2227;
+    --ink: #eceef0;
+    --muted: #a3abb5;
+    --line: #363c44;
+    --accent: #8ab4f8;
+    --accent-ink: #10203a;
+    --pass-bg: #173524;
+    --pass-ink: #a7e3bb;
+    --fail-bg: #43221a;
+    --fail-ink: #ffb9a3;
+    --long-bg: #4a3b10;
+    --hard-bg: #512a20;
+    --both-bg: #6a3424;
+    --wordy: #93c5fd;
+    --wordy-bg: #1d3553;
+    --passive: #7ddc9e;
+    --hardword: #d3a6ff;
+    --adverb: #eec76b;
+    --focus: #8ab4f8;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+h1, h2, h3 { line-height: 1.2; margin: 0; }
+h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; font-weight: 650; }
+p { margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 24px; }
+header.top { background: var(--surface); border-bottom: 1px solid var(--line); padding: 18px 0 16px; }
+.top-inner { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px; }
+.privacy { color: var(--muted); font-size: 0.92rem; }
+main { padding: 20px 0 40px; display: grid; gap: 20px; }
+.grid-top { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.grid-review { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+.stack { display: grid; gap: 20px; min-width: 0; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button {
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 12px; cursor: pointer; min-height: 34px;
+}
+button:hover { border-color: var(--muted); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+textarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 12px; resize: vertical; line-height: 1.55;
+}
+#input { min-height: 360px; display: block; }
+.btn-row { display: flex; gap: 8px; }
+.hint { color: var(--muted); font-size: 0.875rem; margin-top: 8px; }
+
+.verdict { border-radius: 6px; padding: 14px; background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.verdict[data-state="pass"] { background: var(--pass-bg); color: var(--pass-ink); }
+.verdict[data-state="fail"] { background: var(--fail-bg); color: var(--fail-ink); }
+.grade-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.grade-num { font-size: 2.75rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.grade-unit { font-size: 0.95rem; font-weight: 600; }
+.verdict-text { font-weight: 650; margin-top: 8px; }
+.verdict-sub { font-size: 0.9rem; margin-top: 2px; }
+.notice { font-size: 0.875rem; margin-top: 10px; color: var(--muted); }
+.controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px 12px; align-items: center; margin-top: 14px; }
+.controls label { font-size: 0.9rem; }
+.controls input, .controls select {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-height: 34px;
+}
+.controls input { width: 5em; }
+.controls select { width: 100%; min-width: 0; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; margin: 16px 0 0; }
+.facts div { min-width: 0; }
+.facts dt { font-size: 0.8rem; color: var(--muted); }
+.facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+th, td { text-align: left; padding: 6px 0; border-top: 1px solid var(--line); vertical-align: top; }
+thead th { border-top: 0; font-size: 0.8rem; font-weight: 500; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 12px; }
+.formula-note { color: var(--muted); font-size: 0.82rem; display: block; }
+details.formulas { margin-top: 14px; }
+details summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; }
+details[open] summary { margin-bottom: 8px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 12px; font-size: 0.875rem; }
+.legend label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.review { font-size: 1.02rem; line-height: 1.75; overflow-wrap: anywhere; }
+.review .line { margin: 0 0 8px; }
+.review .line.heading { font-weight: 700; }
+.review .line.list { padding-left: 1.2em; text-indent: -1.2em; }
+.review .marker { color: var(--muted); }
+.review .empty { color: var(--muted); }
+.s { border-radius: 3px; padding: 1px 0; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.s.long { background: var(--long-bg); }
+.s.hard { background: var(--hard-bg); }
+.s.long.hard { background: var(--both-bg); }
+.s.flash { outline: 2px solid var(--focus); outline-offset: 2px; }
+mark { background: transparent; color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+mark.wordy { background: var(--wordy-bg); color: var(--wordy); font-weight: 600; border-radius: 3px; text-decoration: underline solid var(--wordy) 2px; }
+mark.passive { text-decoration: underline dashed var(--passive) 2px; }
+mark.hardWord { color: var(--hardword); text-decoration: underline double var(--hardword); font-weight: 600; }
+mark.adverb { text-decoration: underline dotted var(--adverb) 2.5px; }
+.review[data-off~="long"] .s.long:not(.hard) { background: transparent; }
+.review[data-off~="hard"] .s.hard:not(.long) { background: transparent; }
+.review[data-off~="long"] .s.long.hard { background: var(--hard-bg); }
+.review[data-off~="hard"] .s.long.hard { background: var(--long-bg); }
+.review[data-off~="long"][data-off~="hard"] .s.long.hard { background: transparent; }
+.review[data-off~="wordy"] mark.wordy,
+.review[data-off~="passive"] mark.passive,
+.review[data-off~="hardWord"] mark.hardWord,
+.review[data-off~="adverb"] mark.adverb { background: transparent; color: inherit; font-weight: inherit; text-decoration: none; }
+.swatch { display: inline-block; padding: 0 5px; border-radius: 3px; line-height: 1.4; }
+.swatch.long { background: var(--long-bg); }
+.swatch.hard { background: var(--hard-bg); }
+
+.fix-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.fix-list button {
+  width: 100%; text-align: left; padding: 8px 10px; font-size: 0.92rem; line-height: 1.4; display: block;
+}
+.fix-why { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+.fix-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.terms label { display: block; font-weight: 600; font-size: 0.9rem; margin-top: 10px; }
+.terms textarea { min-height: 100px; font-size: 0.9rem; margin-top: 4px; }
+.terms .hint { margin-top: 4px; }
+footer { color: var(--muted); font-size: 0.85rem; padding-bottom: 32px; }
+
+@media (max-width: 900px) {
+  .wrap { padding: 0 16px; }
+  .grid-top, .grid-review { grid-template-columns: minmax(0, 1fr); }
+  #input { min-height: 240px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-inner">
+    <h1>Readability Checker</h1>
+    <p class="privacy">Your text stays on this computer. This page cannot send anything over the network.</p>
+  </div>
+</header>
+
+<div class="wrap">
+<main>
+  <div class="grid-top">
+    <section class="panel" aria-labelledby="input-heading">
+      <div class="panel-head">
+        <h2 id="input-heading"><label for="input">Your text</label></h2>
+        <div class="btn-row">
+          <button type="button" id="sample">Try a sample</button>
+          <button type="button" id="clear">Clear</button>
+        </div>
+      </div>
+      <!-- spellcheck is off because some browsers send text to a cloud service to check it. -->
+      <textarea id="input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+        data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"
+        placeholder="Paste your page here. Headings and bullets from a web page or Word document keep their structure."></textarea>
+      <p class="hint">Each line counts as its own sentence, so lists and headings are scored fairly. Your text is not saved. It is gone when you close this page.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="score-heading">
+      <h2 id="score-heading" class="panel-head">Reading level</h2>
+      <div class="verdict" id="verdict" data-state="none" aria-live="polite">
+        <div class="grade-line"><span class="grade-num" id="grade-num">–</span><span class="grade-unit" id="grade-unit">grade level</span></div>
+        <p class="verdict-text" id="verdict-text">Paste text to see its score.</p>
+        <p class="verdict-sub" id="verdict-sub"></p>
+      </div>
+      <p class="notice" id="notice" hidden></p>
+      <div class="controls">
+        <label for="target">Target grade</label>
+        <input type="number" id="target" min="1" max="18" step="1" inputmode="numeric">
+        <label for="formula">Score with</label>
+        <select id="formula">
+          <option value="fleschKincaid">Flesch-Kincaid</option>
+          <option value="ari">Automated Readability Index</option>
+          <option value="gunningFog">Gunning Fog</option>
+          <option value="smog">SMOG</option>
+          <option value="colemanLiau">Coleman-Liau</option>
+        </select>
+      </div>
+      <dl class="facts">
+        <div><dt>Words</dt><dd id="f-words">0</dd></div>
+        <div><dt>Sentences</dt><dd id="f-sentences">0</dd></div>
+        <div><dt>Words per sentence</dt><dd id="f-wps">0</dd></div>
+        <div><dt>Long sentences</dt><dd id="f-long">0</dd></div>
+        <div><dt>Hard sentences</dt><dd id="f-hard">0</dd></div>
+        <div><dt>Reading time</dt><dd id="f-time">0 min</dd></div>
+      </dl>
+      <details class="formulas">
+        <summary>All formulas</summary>
+        <table>
+          <thead><tr><th scope="col">Formula</th><th scope="col" class="num">Score</th></tr></thead>
+          <tbody id="formula-rows"></tbody>
+        </table>
+      </details>
+    </section>
+  </div>
+
+  <div class="grid-review">
+    <section class="panel" aria-labelledby="review-heading">
+      <h2 id="review-heading" class="panel-head">Review</h2>
+      <div class="legend" id="legend"></div>
+      <div class="review" id="review"><p class="empty">Highlights appear here after you paste text.</p></div>
+    </section>
+
+    <div class="stack">
+      <section class="panel" aria-labelledby="fix-heading">
+        <h2 id="fix-heading" class="panel-head">Fix these sentences first</h2>
+        <ol class="fix-list" id="fix-list"></ol>
+        <p class="hint" id="fix-empty">Nothing to show yet.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="plain-heading">
+        <h2 id="plain-heading" class="panel-head">Plainer wording</h2>
+        <table id="plain-table" hidden>
+          <thead><tr><th scope="col">Instead of</th><th scope="col">Try</th><th scope="col" class="num">Found</th></tr></thead>
+          <tbody id="plain-rows"></tbody>
+        </table>
+        <p class="hint" id="plain-empty">Nothing to show yet.</p>
+      </section>
+
+      <section class="panel terms" aria-labelledby="terms-heading">
+        <details>
+          <summary id="terms-heading">Your word lists</summary>
+          <p class="hint">These add to the team's lists and are saved in this browser only.</p>
+          <label for="my-ignore">Terms to leave alone</label>
+          <textarea id="my-ignore" spellcheck="false" placeholder="One per line, like:&#10;DOITT&#10;Green Thumb"></textarea>
+          <label for="my-replace">Wording to replace</label>
+          <textarea id="my-replace" spellcheck="false" placeholder="One per line, like:&#10;per annum = each year"></textarea>
+        </details>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <p>Scores are estimates from published formulas. They measure sentence and word length, not whether readers can finish their task. Under 100 words, they are not reliable.</p>
+</footer>
+</div>
+
+<script id="ui">
+(function () {
+  "use strict";
+  var Engine = window.ReadabilityEngine;
+  var config = window.READABILITY_CONFIG || {};
+  var STORAGE_KEY = "readability-checker-settings";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var input = $("input"), review = $("review");
+
+  var FORMULAS = {
+    fleschKincaid: { name: "Flesch-Kincaid" },
+    ari: { name: "Automated Readability Index" },
+    gunningFog: { name: "Gunning Fog" },
+    smog: { name: "SMOG", note: "Designed for 30 or more sentences." },
+    colemanLiau: { name: "Coleman-Liau" }
+  };
+  var LEGEND = [
+    { kind: "long", label: "Long sentence", swatch: "swatch long" },
+    { kind: "hard", label: "Hard sentence", swatch: "swatch hard" },
+    { kind: "wordy", label: "Wordy phrase", mark: "wordy" },
+    { kind: "passive", label: "Passive voice", mark: "passive" },
+    { kind: "hardWord", label: "Hard word", mark: "hardWord" },
+    { kind: "adverb", label: "Adverb", mark: "adverb" }
+  ];
+  var SAMPLE = [
+    "# Bulk Item Pickup (made-up sample)",
+    "",
+    "In accordance with program rules, residents are required to schedule an appointment prior to placing bulk items at the curb, and additional fees may be assessed in the event that items are improperly prepared or are placed outside of the designated collection window that has been communicated to the household.",
+    "",
+    "Bulk items include:",
+    "- Mattresses and box springs",
+    "- Sofas and large chairs",
+    "- Refrigerators and other appliances",
+    "",
+    "## How to schedule a pickup",
+    "1. Call 311 or 212-555-0100.",
+    "2. Give your address and apartment number.",
+    "3. Put items out after 4 p.m. the night before.",
+    "",
+    "Pickups are available from 7 a.m. to 3 p.m. Monday through Friday. Dr. Lee's office at 25 Main St. can answer questions. Individuals who need assistance can request help from DSNY.",
+    "",
+    "Please carefully review the aforementioned requirements. Unauthorized disposal is a violation and may subsequently result in administrative penalties."
+  ].join("\n");
+
+  // ---- Saved settings: word lists and preferences, never the draft -------
+  function loadSettings() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function saveSettings() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        target: $("target").value,
+        formula: $("formula").value,
+        ignore: $("my-ignore").value,
+        replace: $("my-replace").value
+      }));
+    } catch (e) { /* storage can be blocked; the page still works */ }
+  }
+
+  function currentOptions() {
+    var ignore = (config.ignoreTerms || []).concat(
+      $("my-ignore").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean));
+    var replacements = Object.assign({}, config.replacements);
+    $("my-replace").value.split("\n").forEach(function (line) {
+      var at = line.indexOf("=");
+      if (at < 1) return;
+      var term = line.slice(0, at).trim(), plain = line.slice(at + 1).trim();
+      if (term && plain) replacements[term] = plain;
+    });
+    var target = parseFloat($("target").value);
+    return {
+      targetGrade: isFinite(target) ? target : (config.targetGrade || 8),
+      longSentenceWords: config.longSentenceWords || 25,
+      ignoreTerms: ignore,
+      familiarLongWords: config.familiarLongWords || [],
+      replacements: replacements
+    };
+  }
+
+  // ---- Formatting ---------------------------------------------------------
+  function fmtGrade(g) { return g < 1 ? "Below 1" : g.toFixed(1); }
+  function fmtTime(minutes) {
+    if (!minutes) return "0 min";
+    return minutes < 1 ? "Under 1 min" : Math.round(minutes) + " min";
+  }
+  function setText(id, value) { $(id).textContent = value; }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function make(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  // ---- Score panel --------------------------------------------------------
+  function renderScore(result, options) {
+    var formula = $("formula").value;
+    var verdict = $("verdict");
+    var notice = $("notice");
+    var target = options.targetGrade;
+
+    if (!result.scores) {
+      verdict.dataset.state = "none";
+      setText("grade-num", "–");
+      setText("grade-unit", "grade level");
+      setText("verdict-text", "Paste text to see its score.");
+      setText("verdict-sub", "");
+      notice.hidden = true;
+    } else {
+      var grade = result.scores[formula];
+      var pass = grade <= target;
+      verdict.dataset.state = pass ? "pass" : "fail";
+      setText("grade-num", fmtGrade(grade));
+      setText("grade-unit", grade < 1 ? "grade" : "grade level");
+      setText("verdict-text", pass
+        ? "✓ Meets the grade " + target + " target"
+        : "! " + (grade - target).toFixed(1) + " grades above the grade " + target + " target");
+      var without = result.adjustedScores ? result.adjustedScores[formula] : null;
+      setText("verdict-sub", without == null ? "" :
+        fmtGrade(without) + " without agency names, phone numbers, and web addresses");
+
+      var notes = [];
+      if (result.counts.words < 100) notes.push("This text has under 100 words, so the score is a rough guide.");
+      if (formula === "smog" && result.counts.sentences < 30) notes.push("SMOG is designed for 30 or more sentences.");
+      notice.textContent = notes.join(" ");
+      notice.hidden = !notes.length;
+    }
+
+    var c = result.counts;
+    setText("f-words", c.words.toLocaleString("en-US"));
+    setText("f-sentences", c.sentences.toLocaleString("en-US"));
+    setText("f-wps", c.sentences ? (c.words / c.sentences).toFixed(1) : "0");
+    setText("f-long", String(result.longSentences));
+    setText("f-hard", String(result.hardSentences));
+    setText("f-time", fmtTime(result.readingMinutes));
+
+    var rows = $("formula-rows");
+    clear(rows);
+    function addRow(name, note, value) {
+      var tr = make("tr");
+      var nameCell = make("td", "", name);
+      if (note) nameCell.appendChild(make("span", "formula-note", note));
+      tr.appendChild(nameCell);
+      tr.appendChild(make("td", "num", value));
+      rows.appendChild(tr);
+    }
+    Object.keys(FORMULAS).forEach(function (key) {
+      addRow(FORMULAS[key].name, FORMULAS[key].note, result.scores ? fmtGrade(result.scores[key]) : "–");
+    });
+    addRow("Flesch Reading Ease", "0 to 100. Higher is easier.",
+      result.scores ? result.scores.fleschReadingEase.toFixed(1) : "–");
+  }
+
+  // ---- Review panel -------------------------------------------------------
+  // Everything goes in as text nodes, so pasted HTML can never run.
+  function appendWithMarks(parent, source, start, end, marks) {
+    var cursor = start;
+    marks.forEach(function (m) {
+      if (m.start < start || m.end > end) return;
+      if (m.start > cursor) parent.appendChild(document.createTextNode(source.slice(cursor, m.start)));
+      var node = make("mark", m.kind, source.slice(m.start, m.end));
+      if (m.kind === "wordy") node.title = "Try: " + m.suggestion;
+      else if (m.kind === "passive") node.title = "Passive voice";
+      else if (m.kind === "hardWord") node.title = "Hard word";
+      else node.title = "Adverb";
+      parent.appendChild(node);
+      cursor = m.end;
+    });
+    if (cursor < end) parent.appendChild(document.createTextNode(source.slice(cursor, end)));
+  }
+
+  function renderReview(result) {
+    clear(review);
+    if (!result.sentences.length) {
+      review.appendChild(make("p", "empty", "Highlights appear here after you paste text."));
+      return;
+    }
+    result.lines.forEach(function (line) {
+      if (line.type === "blank") return;
+      var p = make("p", "line " + line.type);
+      if (line.contentStart > line.start) {
+        p.appendChild(make("span", "marker", result.source.slice(line.start, line.contentStart)));
+      }
+      var cursor = line.contentStart;
+      line.sentences.forEach(function (sentence) {
+        if (sentence.start > cursor) {
+          appendWithMarks(p, result.source, cursor, sentence.start, []);
+        }
+        var span = make("span", "s " + sentence.flags.join(" "));
+        span.id = "sentence-" + sentence.index;
+        var own = result.marks.filter(function (m) { return m.sentenceIndex === sentence.index; });
+        appendWithMarks(span, result.source, sentence.start, sentence.end, own);
+        p.appendChild(span);
+        cursor = sentence.end;
+      });
+      if (cursor < line.end) appendWithMarks(p, result.source, cursor, line.end, []);
+      review.appendChild(p);
+    });
+  }
+
+  function renderLegend(result) {
+    var off = (review.dataset.off || "").split(" ");
+    var legend = $("legend");
+    clear(legend);
+    var counts = {
+      long: result.longSentences, hard: result.hardSentences,
+      wordy: result.markCounts.wordy, passive: result.markCounts.passive,
+      hardWord: result.markCounts.hardWord, adverb: result.markCounts.adverb
+    };
+    LEGEND.forEach(function (item) {
+      var label = make("label");
+      var box = make("input");
+      box.type = "checkbox";
+      box.checked = off.indexOf(item.kind) === -1;
+      box.addEventListener("change", function () {
+        var current = (review.dataset.off || "").split(" ").filter(Boolean)
+          .filter(function (k) { return k !== item.kind; });
+        if (!box.checked) current.push(item.kind);
+        review.dataset.off = current.join(" ");
+      });
+      label.appendChild(box);
+      var text = item.label + " (" + counts[item.kind] + ")";
+      label.appendChild(item.mark ? make("mark", item.mark, text) : make("span", item.swatch, text));
+      legend.appendChild(label);
+    });
+  }
+
+  function reasonFor(sentence, options) {
+    var parts = [];
+    if (sentence.flags.indexOf("long") !== -1) parts.push(sentence.wordCount + " words");
+    if (sentence.flags.indexOf("hard") !== -1) parts.push("about grade " + Math.round(sentence.grade));
+    return parts.join(", ");
+  }
+
+  function renderFixes(result, options) {
+    var list = $("fix-list");
+    var empty = $("fix-empty");
+    clear(list);
+    result.priorities.slice(0, 5).forEach(function (sentence) {
+      var li = make("li");
+      var button = make("button");
+      button.type = "button";
+      button.appendChild(make("span", "fix-why", reasonFor(sentence, options)));
+      button.appendChild(make("span", "fix-text", sentence.text));
+      button.addEventListener("click", function () {
+        var node = $("sentence-" + sentence.index);
+        if (!node) return;
+        node.scrollIntoView({ block: "center" });
+        node.classList.add("flash");
+        setTimeout(function () { node.classList.remove("flash"); }, 1600);
+      });
+      li.appendChild(button);
+      list.appendChild(li);
+    });
+    empty.hidden = result.priorities.length > 0;
+    empty.textContent = result.sentences.length ? "No long or hard sentences found." : "Nothing to show yet.";
+  }
+
+  function renderSuggestions(result) {
+    var rows = $("plain-rows");
+    clear(rows);
+    result.suggestions.forEach(function (s) {
+      var tr = make("tr");
+      tr.appendChild(make("td", "", s.term));
+      tr.appendChild(make("td", "", s.suggestion));
+      tr.appendChild(make("td", "num", String(s.count)));
+      rows.appendChild(tr);
+    });
+    $("plain-table").hidden = !result.suggestions.length;
+    $("plain-empty").hidden = result.suggestions.length > 0;
+    $("plain-empty").textContent = result.sentences.length ? "No wordy phrases found." : "Nothing to show yet.";
+  }
+
+  function update() {
+    var options = currentOptions();
+    var result = Engine.analyze(input.value, options);
+    renderScore(result, options);
+    renderReview(result);
+    renderLegend(result);
+    renderFixes(result, options);
+    renderSuggestions(result);
+  }
+
+  var timer = null;
+  function scheduleUpdate() {
+    clearTimeout(timer);
+    timer = setTimeout(update, 120);
+  }
+
+  // ---- Paste: keep the structure of web pages and Word documents ----------
+  var SKIP = /^(?:SCRIPT|STYLE|HEAD|META|LINK|TITLE|NOSCRIPT|TEMPLATE|SVG|IFRAME|OBJECT|BUTTON|SELECT)$/;
+  var BLOCK = /^(?:P|DIV|SECTION|ARTICLE|ASIDE|HEADER|FOOTER|MAIN|NAV|BLOCKQUOTE|PRE|ADDRESS|FIGURE|FIGCAPTION|TABLE|TBODY|THEAD|TFOOT|TR|TD|TH|UL|OL|DL|DT|DD|FORM|FIELDSET|HR|DETAILS|SUMMARY)$/;
+
+  function htmlToStructuredText(html) {
+    var doc = new DOMParser().parseFromString(html, "text/html");
+    var lines = [], current = "", prefix = "";
+    function flush() {
+      var text = current.replace(/\s+/g, " ").trim();
+      if (text) lines.push(prefix + text);
+      current = "";
+      prefix = "";
+    }
+    function walk(node, listStack) {
+      node.childNodes.forEach(function (child) {
+        if (child.nodeType === 3) { current += child.nodeValue; return; }
+        if (child.nodeType !== 1) return;
+        var tag = child.tagName.toUpperCase();
+        if (SKIP.test(tag)) return;
+        if (tag === "BR") { var keep = prefix; flush(); prefix = ""; return keep; }
+        var heading = tag.match(/^H([1-6])$/);
+        if (heading) {
+          flush();
+          prefix = "#".repeat(+heading[1]) + " ";
+          walk(child, listStack);
+          flush();
+        } else if (tag === "LI") {
+          flush();
+          var parent = listStack[listStack.length - 1];
+          if (parent && parent.ordered) { parent.n++; prefix = parent.n + ". "; }
+          else prefix = "- ";
+          walk(child, listStack);
+          flush();
+        } else if (tag === "UL" || tag === "OL") {
+          flush();
+          var start = parseInt(child.getAttribute("start"), 10);
+          walk(child, listStack.concat([{ ordered: tag === "OL", n: isFinite(start) ? start - 1 : 0 }]));
+          flush();
+        } else if (BLOCK.test(tag)) {
+          // A <p> inside an <li> must not drop the list marker.
+          var inherited = current.trim() ? "" : prefix;
+          if (!inherited) flush();
+          prefix = inherited;
+          walk(child, listStack);
+          flush();
+        } else {
+          walk(child, listStack);
+        }
+      });
+    }
+    walk(doc.body, []);
+    flush();
+    return lines.join("\n");
+  }
+
+  input.addEventListener("paste", function (event) {
+    var data = event.clipboardData;
+    var html = data && data.getData("text/html");
+    if (!html || !/<(?:p|li|h[1-6]|div|br|tr)[\s>\/]/i.test(html)) return;
+    var text = htmlToStructuredText(html);
+    if (!text) return;
+    event.preventDefault();
+    input.setRangeText(text, input.selectionStart, input.selectionEnd, "end");
+    scheduleUpdate();
+  });
+
+  // ---- Wiring -------------------------------------------------------------
+  var saved = loadSettings();
+  $("target").value = saved.target || config.targetGrade || 8;
+  $("formula").value = FORMULAS[saved.formula] ? saved.formula :
+    (FORMULAS[config.headlineFormula] ? config.headlineFormula : "fleschKincaid");
+  $("my-ignore").value = saved.ignore || "";
+  $("my-replace").value = saved.replace || "";
+
+  input.addEventListener("input", scheduleUpdate);
+  ["target", "formula", "my-ignore", "my-replace"].forEach(function (id) {
+    $(id).addEventListener("input", function () { saveSettings(); scheduleUpdate(); });
+  });
+  $("sample").addEventListener("click", function () { input.value = SAMPLE; update(); input.focus(); });
+  $("clear").addEventListener("click", function () { input.value = ""; update(); input.focus(); });
+
+  update();
+})();
+</script>
+</body>
+</html>

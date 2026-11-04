@@ -1,0 +1,9 @@
+{
+  "name": "readability-checker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private, single-file readability checker for public service content. Runs entirely in the browser.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
